@@ -584,42 +584,52 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                         
                 elif input6.text == '3':
                     raise Exception("Working In Progress")
-                    
+
                 elif input6.text == '4':
-                    # Videos Only — extract videos + DppVideos across all subjects/chapters
+                    # Videos Only using /v2/contents API + CloudFront HLS URL construction
                     url = f"https://api.penpencil.co/v3/batches/{selected_batch_id}/details"
                     batch_details = await fetch_pwwp_data(session, url, headers=headers)
 
-                    if batch_details and batch_details.get("success"):
-                        subjects = batch_details.get("data", {}).get("subjects", [])
-                        all_video_lines = []
+                    if not (batch_details and batch_details.get("success")):
+                        raise Exception("Error fetching batch details")
 
-                        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=1000)) as vsession:
-                            for subject in subjects:
-                                subject_id = subject.get("_id")
-                                subject_name = subject.get("subject", "Unknown").replace("/", "-")
+                    subjects = batch_details.get("data", {}).get("subjects", [])
+                    all_video_lines = []
 
-                                chapters = await get_pwwp_all_chapters(vsession, selected_batch_id, subject_id, headers)
+                    for subject in subjects:
+                        subject_id = subject.get("_id")
+                        for page in range(1, 100):
+                            params_v = {
+                                "page": str(page),
+                                "tag": "",
+                                "contentType": "videos",
+                            }
+                            res = await fetch_pwwp_data(
+                                session,
+                                f"https://api.penpencil.co/v2/batches/{selected_batch_id}/subject/{subject_id}/contents",
+                                headers=headers,
+                                params=params_v
+                            )
+                            data_list = res.get("data", []) if res else []
+                            if not data_list:
+                                break
+                            for item in data_list:
+                                try:
+                                    raw_url = item.get("url", "")
+                                    topic = item.get("topic", "Unknown")
+                                    if raw_url:
+                                        video_id = raw_url.split("/")[-2]
+                                        hls_url = f"https://d26g5bnklkwsh4.cloudfront.net/{video_id}/hls/720/main.m3u8"
+                                        all_video_lines.append(f"{topic}:{hls_url}
+")
+                                except Exception:
+                                    pass
 
-                                chapter_tasks = [
-                                    process_pwwp_chapters(vsession, chapter["_id"], selected_batch_id, subject_id, headers)
-                                    for chapter in chapters
-                                ]
-                                chapter_results = await asyncio.gather(*chapter_tasks)
-
-                                for chapter, content in zip(chapters, chapter_results):
-                                    chapter_name = chapter.get("name", "Unknown").replace("/", "-")
-                                    for ctype in ["videos", "DppVideos"]:
-                                        for line in content.get(ctype, []):
-                                            all_video_lines.append(f"{line}\n")
-
-                        if all_video_lines:
-                            with open(f"{clean_file_name}.txt", "w", encoding="utf-8") as f:
-                                f.writelines(all_video_lines)
-                        else:
-                            raise Exception("No videos found in this batch")
+                    if all_video_lines:
+                        with open(f"{clean_file_name}.txt", "w", encoding="utf-8") as f:
+                            f.writelines(all_video_lines)
                     else:
-                        raise Exception(f"Error fetching batch details: {batch_details.get('message')}")
+                        raise Exception("No videos found in this batch")
 
                 else:
                     raise Exception("Invalid index.")
