@@ -523,7 +523,7 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                 else:
                     raise Exception("Invalid batch index.")
                     
-                await editable.edit("1.```\nFull Batch```\n2.```\nToday's Class```\n3.```\nKhazana```")
+                await editable.edit("1.```\nFull Batch```\n2.```\nToday's Class```\n3.```\nKhazana```\n4.```\nVideos Only```")
                     
                 try:
                     input6 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
@@ -585,6 +585,42 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                 elif input6.text == '3':
                     raise Exception("Working In Progress")
                     
+                elif input6.text == '4':
+                    # Videos Only — extract videos + DppVideos across all subjects/chapters
+                    url = f"https://api.penpencil.co/v3/batches/{selected_batch_id}/details"
+                    batch_details = await fetch_pwwp_data(session, url, headers=headers)
+
+                    if batch_details and batch_details.get("success"):
+                        subjects = batch_details.get("data", {}).get("subjects", [])
+                        all_video_lines = []
+
+                        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=1000)) as vsession:
+                            for subject in subjects:
+                                subject_id = subject.get("_id")
+                                subject_name = subject.get("subject", "Unknown").replace("/", "-")
+
+                                chapters = await get_pwwp_all_chapters(vsession, selected_batch_id, subject_id, headers)
+
+                                chapter_tasks = [
+                                    process_pwwp_chapters(vsession, chapter["_id"], selected_batch_id, subject_id, headers)
+                                    for chapter in chapters
+                                ]
+                                chapter_results = await asyncio.gather(*chapter_tasks)
+
+                                for chapter, content in zip(chapters, chapter_results):
+                                    chapter_name = chapter.get("name", "Unknown").replace("/", "-")
+                                    for ctype in ["videos", "DppVideos"]:
+                                        for line in content.get(ctype, []):
+                                            all_video_lines.append(f"{line}\n")
+
+                        if all_video_lines:
+                            with open(f"{clean_file_name}.txt", "w", encoding="utf-8") as f:
+                                f.writelines(all_video_lines)
+                        else:
+                            raise Exception("No videos found in this batch")
+                    else:
+                        raise Exception(f"Error fetching batch details: {batch_details.get('message')}")
+
                 else:
                     raise Exception("Invalid index.")
                     
