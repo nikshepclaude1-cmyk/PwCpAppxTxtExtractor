@@ -307,6 +307,36 @@ async def process_pwwp_chapters(session: aiohttp.ClientSession, chapter_id, sele
 
     return combined_content
 
+async def fetch_pwwp_subject_videos(session: aiohttp.ClientSession, selected_batch_id: str, subject_id: str, headers: Dict) -> List[str]:
+    """Fetch ALL video URLs for a subject without chapter tag filter.
+    This catches videos not yet tagged to any chapter (ongoing batches)."""
+    video_lines = []
+    seen_ids = set()
+    skip_keywords = ['new feature update', 'new update', 'important update',
+                     'new study page', 'study page update', 'feature update']
+    for page in range(1, 200):
+        params = {'page': str(page), 'tag': '', 'contentType': 'videos'}
+        data = await fetch_pwwp_data(
+            session,
+            f"https://api.penpencil.co/v2/batches/{selected_batch_id}/subject/{subject_id}/contents",
+            headers=headers, params=params
+        )
+        items = data.get("data", []) if data else []
+        if not items:
+            break
+        for item in items:
+            item_id = item.get("_id", "")
+            if item_id in seen_ids:
+                continue
+            seen_ids.add(item_id)
+            topic = (item.get("topic") or "").strip()
+            raw_url = (item.get("url") or "").strip()
+            if any(k in topic.lower() for k in skip_keywords):
+                continue
+            if raw_url:
+                video_lines.append(f"{topic}:{raw_url}")
+    return video_lines
+
 
 async def get_pwwp_all_chapters(session: aiohttp.ClientSession, selected_batch_id, subject_id, headers: Dict):
     all_chapters = []
@@ -343,7 +373,9 @@ async def process_pwwp_subject(session: aiohttp.ClientSession, subject: Dict, se
 
     chapter_results = await asyncio.gather(*chapter_tasks)
 
+    # Collect all chapter-tagged video URLs to dedup against subject-level fetch
     all_urls = []
+    chapter_video_urls = set()
     for chapter, chapter_content in zip(chapters, chapter_results):
         chapter_name = chapter.get("name", "Unknown Chapter").replace("/", "-")
 
@@ -355,6 +387,23 @@ async def process_pwwp_subject(session: aiohttp.ClientSession, subject: Dict, se
                 zipf.writestr(f"{subject_name}/{chapter_name}/{content_type}.txt", content_string.encode('utf-8'))
                 json_data[selected_batch_name][subject_name][chapter_name][content_type] = content
                 all_urls.extend(content)
+                if content_type in ('videos', 'DppVideos'):
+                    for line in content:
+                        chapter_video_urls.add(line)
+
+    # Fetch ALL subject videos without chapter filter — catches untagged/ongoing lectures
+    subject_videos = await fetch_pwwp_subject_videos(session, selected_batch_id, subject_id, headers)
+
+    # Add videos not already captured by chapter-tagged fetch
+    extra_videos = [v for v in subject_videos if v not in chapter_video_urls]
+    if extra_videos:
+        extra_str = "\n".join(extra_videos)
+        zipf.writestr(f"{subject_name}/_all_videos.txt", extra_str.encode('utf-8'))
+        if json_data[selected_batch_name][subject_name].get('_all_videos') is None:
+            json_data[selected_batch_name][subject_name]['_all_videos'] = {}
+        json_data[selected_batch_name][subject_name]['_all_videos']['videos'] = extra_videos
+        all_urls.extend(extra_videos)
+
     all_subject_urls[subject_name] = all_urls
 
 def find_pw_old_batch(batch_search):
