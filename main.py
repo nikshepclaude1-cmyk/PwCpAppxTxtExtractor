@@ -620,8 +620,7 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                                     if raw_url:
                                         video_id = raw_url.split("/")[-2]
                                         hls_url = f"https://d26g5bnklkwsh4.cloudfront.net/{video_id}/hls/720/main.m3u8"
-                                        all_video_lines.append(f"{topic}:{hls_url}
-")
+                                        all_video_lines.append(f"{topic}:{hls_url}\n")
                                 except Exception:
                                     pass
 
