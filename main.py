@@ -68,6 +68,92 @@ image_list = [
 ]
 print(4321)
 
+def generate_pw_html(batch_name: str, json_data: dict) -> str:
+    """Generate a rich HTML file from the batch JSON data — videos, notes, DPPs all clickable."""
+    rows = []
+    serial = 1
+
+    batch = json_data.get(batch_name, {})
+    for subject_name, chapters in batch.items():
+        rows.append(f'''
+        <tr class="subject-row">
+            <td colspan="3">📚 {subject_name}</td>
+        </tr>''')
+        for chapter_name, content_types in chapters.items():
+            rows.append(f'''
+        <tr class="chapter-row">
+            <td colspan="3">📖 {chapter_name}</td>
+        </tr>''')
+            for ctype, items in content_types.items():
+                icon = "🎬" if "video" in ctype.lower() else ("📄" if "note" in ctype.lower() else "📝")
+                label = ctype
+                for item in items:
+                    try:
+                        name, url = item.split(":", 1)
+                    except ValueError:
+                        continue
+                    rows.append(f'''
+        <tr>
+            <td>{serial}</td>
+            <td>{icon} [{label}] {name}</td>
+            <td><a href="{url}" target="_blank">▶ Open</a></td>
+        </tr>''')
+                    serial += 1
+
+    rows_html = "\n".join(rows)
+
+    return f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{batch_name}</title>
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: Arial, sans-serif; background: #0f0f0f; color: #e0e0e0; padding: 16px; }}
+  h1 {{ text-align: center; color: #ff6b35; margin-bottom: 8px; font-size: 1.4em; }}
+  .subtitle {{ text-align: center; color: #888; font-size: 0.85em; margin-bottom: 20px; }}
+  input#search {{
+    width: 100%; padding: 10px 14px; border-radius: 8px;
+    border: 1px solid #333; background: #1e1e1e; color: #fff;
+    font-size: 0.95em; margin-bottom: 16px; outline: none;
+  }}
+  table {{ width: 100%; border-collapse: collapse; }}
+  th {{ background: #1a1a1a; color: #ff6b35; padding: 10px 8px; text-align: left; font-size: 0.85em; position: sticky; top: 0; }}
+  td {{ padding: 8px; border-bottom: 1px solid #1f1f1f; font-size: 0.82em; vertical-align: middle; }}
+  tr:hover td {{ background: #1a1a1a; }}
+  .subject-row td {{ background: #1f1220; color: #ff6b35; font-weight: bold; font-size: 0.9em; padding: 10px 8px; }}
+  .chapter-row td {{ background: #141414; color: #aaa; font-size: 0.8em; padding: 6px 8px 6px 20px; }}
+  a {{ color: #4fc3f7; text-decoration: none; font-weight: bold; }}
+  a:hover {{ color: #fff; }}
+  td:first-child {{ width: 40px; color: #555; text-align: center; }}
+  td:last-child {{ width: 80px; text-align: center; }}
+  .hidden {{ display: none; }}
+</style>
+</head>
+<body>
+<h1>{batch_name}</h1>
+<p class="subtitle">Total {serial - 1} items — Open links in Chrome, copy URL from address bar to download</p>
+<input type="text" id="search" placeholder="🔍 Search lectures, notes, DPPs..." oninput="filterTable()">
+<table>
+  <thead><tr><th>#</th><th>Content</th><th>Link</th></tr></thead>
+  <tbody id="tableBody">
+{rows_html}
+  </tbody>
+</table>
+<script>
+function filterTable() {{
+  const q = document.getElementById("search").value.toLowerCase();
+  document.querySelectorAll("#tableBody tr").forEach(row => {{
+    if (row.classList.contains("subject-row") || row.classList.contains("chapter-row")) return;
+    row.classList.toggle("hidden", !row.textContent.toLowerCase().includes(q));
+  }});
+}}
+</script>
+</body>
+</html>'''
+
+
 
 @bot.on_message(filters.command(["start"]))
 async def start(bot, message):
@@ -569,6 +655,11 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                                 if subject_name in all_subject_urls:
                                     f.write('\n'.join(all_subject_urls[subject_name]) + '\n')
 
+                        # Generate HTML file
+                        html_content = generate_pw_html(selected_batch_name, json_data)
+                        with open(f"{clean_file_name}.html", 'w', encoding='utf-8') as f:
+                            f.write(html_content)
+
                     else:
                         raise Exception(f"Error fetching batch details: {batch_details.get('message')}")
                     
@@ -627,6 +718,12 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                     if all_video_lines:
                         with open(f"{clean_file_name}.txt", "w", encoding="utf-8") as f:
                             f.writelines(all_video_lines)
+
+                        # Generate HTML for Videos Only
+                        video_json = {selected_batch_name: {"Videos": {"All Videos": {"videos": [line.strip() for line in all_video_lines]}}}}
+                        html_content = generate_pw_html(selected_batch_name, video_json)
+                        with open(f"{clean_file_name}.html", "w", encoding="utf-8") as f:
+                            f.write(html_content)
                     else:
                         raise Exception("No videos found in this batch")
 
@@ -650,7 +747,7 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                 
                 caption = f"**Batch Name : ```\n{selected_batch_name}``````\nTime Taken : {formatted_time}```**"
                         
-                files = [f"{clean_file_name}.{ext}" for ext in ["txt", "zip", "json"]]
+                files = [f"{clean_file_name}.{ext}" for ext in ["txt", "zip", "json", "html"]]
                 for file in files:
                     file_ext = os.path.splitext(file)[1][1:]
                     try:
