@@ -209,24 +209,29 @@ async def process_pwwp_chapter_content(session: aiohttp.ClientSession, chapter_i
     content = []
 
     if content_type in ("videos", "DppVideos"):
-        # Use raw URL from /v2/contents directly — this is the actual working URL
-        # Output as-is: the mpd URL with parentId/childId is what PW player uses
+        # Strategy: try raw_url from /v2/contents first (fast, no extra call)
+        # If empty, hit schedule-details which has videoDetails.videoUrl for recorded lectures
         if raw_url:
             name = raw_topic or schedule_id
             content.append(f"{name}:{raw_url}")
             return {content_type: content} if content else {}
 
-        # Fallback: schedule-details for older content
+        # raw_url empty — hit schedule-details to get videoUrl
         det_url = f"https://api.penpencil.co/v1/batches/{selected_batch_id}/subject/{subject_id}/schedule/{schedule_id}/schedule-details"
         data = await fetch_pwwp_data(session, det_url, headers=headers)
         if data and data.get("success") and data.get("data"):
             data_item = data["data"]
+            name = data_item.get('topic', '') or raw_topic or schedule_id
             video_details = data_item.get('videoDetails', {})
             if video_details:
-                name = data_item.get('topic', '') or raw_topic or schedule_id
                 video_url = video_details.get('videoUrl') or video_details.get('embedCode') or ""
                 if video_url:
                     content.append(f"{name}:{video_url}")
+                    return {content_type: content} if content else {}
+            # Also check top-level url field in schedule-details response
+            top_url = data_item.get('url', '')
+            if top_url and 'cloudfront' in top_url:
+                content.append(f"{name}:{top_url}")
         return {content_type: content} if content else {}
 
     else:
@@ -263,6 +268,12 @@ async def fetch_pwwp_all_schedule(session: aiohttp.ClientSession, chapter_id, se
         if data and data.get("success") and data.get("data"):
             for item in data["data"]:
                 item['content_type'] = content_type
+                # Skip PW announcement/update entries — they have no real video URL
+                topic = (item.get('topic') or '').lower()
+                skip_keywords = ['new feature update', 'new update', 'important update',
+                                  'new study page', 'study page update', 'feature update']
+                if content_type in ('videos', 'DppVideos') and any(k in topic for k in skip_keywords):
+                    continue
                 all_schedule.append(item)
             page += 1
         else:
