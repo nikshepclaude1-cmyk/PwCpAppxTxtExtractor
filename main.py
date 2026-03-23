@@ -693,7 +693,7 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                             params_v = {
                                 "page": str(page),
                                 "tag": "",
-                                "contentType": "videos",
+                                "contentType": "exercises-notes-videos",
                             }
                             res = await fetch_pwwp_data(
                                 session,
@@ -709,8 +709,12 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                                     raw_url = item.get("url", "")
                                     topic = item.get("topic", "Unknown")
                                     if raw_url:
-                                        video_id = raw_url.split("/")[-2]
-                                        hls_url = f"https://d26g5bnklkwsh4.cloudfront.net/{video_id}/hls/720/main.m3u8"
+                                        # Convert MPD DRM URL → HLS m3u8 (cdn swap trick)
+                                        hls_url = raw_url.replace("d1d34p8vz63oiq", "d3nzo6itypaz07").replace("mpd", "m3u8").strip()
+                                        # Fallback: old cloudfront HLS construction
+                                        if "d3nzo6itypaz07" not in hls_url and "m3u8" not in hls_url:
+                                            video_id = raw_url.split("/")[-2]
+                                            hls_url = f"https://d26g5bnklkwsh4.cloudfront.net/{video_id}/hls/720/main.m3u8"
                                         all_video_lines.append(f"{topic}:{hls_url}\n")
                                 except Exception:
                                     pass
@@ -1809,6 +1813,230 @@ async def process_appxwp(bot: Client, m: Message, user_id: int):
 
 
 # Start Flask + Bot
+
+@bot.on_message(filters.command(["dppquiz"]))
+async def dppquiz_command(bot: Client, m: Message):
+    user_id = m.from_user.id
+
+    auth_user = auth_users[0]
+    user = await bot.get_users(auth_user)
+    owner_username = "@" + user.username
+
+    if user_id not in auth_users:
+        await m.reply_text(f"**You Are Not Subscribed To This Bot\nContact - {owner_username}**")
+        return
+
+    THREADPOOL.submit(asyncio.run, process_dppquiz(bot, m, user_id))
+
+
+async def process_dppquiz(bot: Client, m: Message, user_id: int):
+    loop = asyncio.get_event_loop()
+    CONNECTOR = aiohttp.TCPConnector(limit=100, loop=loop)
+    async with aiohttp.ClientSession(connector=CONNECTOR, loop=loop) as session:
+        try:
+            editable = await m.reply_text("**Send your PW Access Token**")
+            try:
+                inp = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
+                token = inp.text.strip()
+                await inp.delete(True)
+            except ListenerTimeout:
+                await editable.edit("**Timeout!**"); return
+
+            headers = {
+                'Host': 'api.penpencil.co',
+                'client-id': '5eb393ee95fab7468a79d189',
+                'client-version': '1910',
+                'user-agent': 'Mozilla/5.0 (Linux; Android 12; M2101K6P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Mobile Safari/537.36',
+                'randomid': '72012511-256c-4e1c-b4c7-29d67136af37',
+                'client-type': 'WEB',
+                'content-type': 'application/json; charset=utf-8',
+                'authorization': f'Bearer {token}',
+            }
+
+            # Step 1: Batch name search
+            await editable.edit("**Enter Batch Name**")
+            try:
+                inp2 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
+                batch_search = inp2.text.strip()
+                await inp2.delete(True)
+            except ListenerTimeout:
+                await editable.edit("**Timeout!**"); return
+
+            courses = await fetch_pwwp_data(session, f"https://api.penpencil.co/v3/batches/search?name={batch_search}", headers)
+            courses = courses.get("data", []) if courses else []
+            if not courses:
+                await editable.edit("**No batches found**"); return
+
+            text = "".join([f"{i+1}. ```\n{c['name']}```\n" for i, c in enumerate(courses)])
+            await editable.edit(f"**Select batch:\n\n{text}**")
+            try:
+                inp3 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
+                idx = int(inp3.text.strip()) - 1
+                await inp3.delete(True)
+            except (ListenerTimeout, ValueError):
+                await editable.edit("**Timeout or invalid input**"); return
+
+            if not (0 <= idx < len(courses)):
+                await editable.edit("**Invalid index**"); return
+
+            batch = courses[idx]
+            batch_id = batch["_id"]
+            batch_name = batch["name"]
+
+            # Step 2: Get subjects
+            batch_details = await fetch_pwwp_data(session, f"https://api.penpencil.co/v3/batches/{batch_id}/details", headers=headers)
+            subjects = batch_details.get("data", {}).get("subjects", []) if batch_details else []
+            if not subjects:
+                await editable.edit("**No subjects found**"); return
+
+            text = "".join([f"{i+1}. ```\n{s['subject']}```\n" for i, s in enumerate(subjects)])
+            await editable.edit(f"**Select subject:\n\n{text}**")
+            try:
+                inp4 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
+                sidx = int(inp4.text.strip()) - 1
+                await inp4.delete(True)
+            except (ListenerTimeout, ValueError):
+                await editable.edit("**Timeout or invalid input**"); return
+
+            if not (0 <= sidx < len(subjects)):
+                await editable.edit("**Invalid index**"); return
+
+            subject = subjects[sidx]
+            subject_id = subject["_id"]
+            subject_name = subject["subject"]
+
+            # Step 3: Get topics/chapters
+            all_topics = []
+            page = 1
+            while True:
+                res = await fetch_pwwp_data(session, f"https://api.penpencil.co/v2/batches/{batch_id}/subject/{subject_id}/topics?page={page}", headers=headers)
+                tlist = res.get("data", []) if res else []
+                if not tlist:
+                    break
+                all_topics.extend(tlist)
+                page += 1
+
+            if not all_topics:
+                await editable.edit("**No topics found**"); return
+
+            text = "".join([f"{i+1}. ```\n{t['name']}```\n" for i, t in enumerate(all_topics)])
+            if len(text) > 3500:
+                # Too long, send as file
+                with open("topics_list.txt", "w") as f:
+                    f.write(text.replace("```\n", "").replace("```", ""))
+                await editable.delete(True)
+                with open("topics_list.txt", "rb") as f:
+                    await m.reply_document(f, caption="**Send topic index number**")
+                os.remove("topics_list.txt")
+                editable = await m.reply_text("**Send topic index number**")
+            else:
+                await editable.edit(f"**Select topic:\n\n{text}**")
+
+            try:
+                inp5 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
+                tidx = int(inp5.text.strip()) - 1
+                await inp5.delete(True)
+            except (ListenerTimeout, ValueError):
+                await editable.edit("**Timeout or invalid input**"); return
+
+            if not (0 <= tidx < len(all_topics)):
+                await editable.edit("**Invalid index**"); return
+
+            topic = all_topics[tidx]
+            topic_id = topic["_id"]
+            topic_name = topic["name"]
+
+            await editable.edit(f"**Fetching DPP Quiz for {topic_name}...**")
+
+            # Step 4: Get attempt ID from /v3/test-service/tests/dpp
+            dpp_url = (f"https://api.penpencil.co/v3/test-service/tests/dpp?"
+                       f"page=1&limit=50&batchId={batch_id}&batchSubjectId={subject_id}"
+                       f"&isSubjective=false&chapterId={topic_id}")
+            dpp_data = await fetch_pwwp_data(session, dpp_url, headers=headers)
+
+            attempt_id = None
+            test_name = topic_name
+            if dpp_data and dpp_data.get("data"):
+                for entry in dpp_data["data"]:
+                    mapping = entry.get("testStudentMapping", {})
+                    aid = mapping.get("_id")
+                    if aid:
+                        attempt_id = aid
+                        test_name = entry.get("title", topic_name)
+                        break
+
+            if not attempt_id:
+                await editable.edit(f"**No attempted DPP Quiz found for {topic_name}**\n\nYou need to attempt the quiz on the PW app first.")
+                return
+
+            # Step 5: Fetch questions from /preview-test
+            preview_url = f"https://api.penpencil.co/v3/test-service/tests/mapping/{attempt_id}/preview-test"
+            preview_data = await fetch_pwwp_data(session, preview_url, headers=headers)
+
+            if not preview_data or not preview_data.get("data"):
+                await editable.edit("**Failed to fetch quiz questions**"); return
+
+            questions = preview_data["data"].get("questions", [])
+            if not questions:
+                await editable.edit("**No questions found in this quiz**"); return
+
+            # Step 6: Build output txt
+            lines = [f"DPP Quiz: {test_name}", f"Batch: {batch_name} | Subject: {subject_name} | Topic: {topic_name}", f"Total Questions: {len(questions)}", "=" * 60, ""]
+
+            for i, qwrap in enumerate(questions):
+                q = qwrap.get("question", {})
+                q_num = q.get("questionNumber", i + 1)
+                difficulty = q.get("difficultyLevel", "N/A")
+                topic_tag = (q.get("topicId") or {}).get("name", "")
+
+                lines.append(f"Q{q_num}. [{difficulty}] {topic_tag}")
+
+                # Question image URL if present
+                img_en = q.get("imageIds", {}).get("en")
+                if img_en:
+                    img_url = img_en.get("baseUrl", "") + img_en.get("key", "")
+                    lines.append(f"   [Image] {img_url}")
+
+                # Options
+                options = q.get("options", [])
+                solution_ids = set(q.get("solutions", []))
+                for opt in options:
+                    opt_id = opt.get("_id", "")
+                    opt_text = opt.get("texts", {}).get("en", "")
+                    marker = "✅" if opt_id in solution_ids else "  "
+                    lines.append(f"   {marker} {opt_text}")
+
+                # Solution description images
+                for sd in q.get("solutionDescription", []):
+                    sd_img = sd.get("imageIds", {}).get("en")
+                    if sd_img:
+                        sd_url = sd_img.get("baseUrl", "") + sd_img.get("key", "")
+                        lines.append(f"   [Solution] {sd_url}")
+
+                lines.append("")
+
+            output = "\n".join(lines)
+            clean_name = f"{user_id}_{batch_name}_{subject_name}_{topic_name}".replace("/", "-").replace("|", "-")[:200]
+            fname = f"{clean_name}_dppquiz.txt"
+            with open(fname, "w", encoding="utf-8") as f:
+                f.write(output)
+
+            await editable.delete(True)
+            caption = f"**Batch: ```\n{batch_name}```\nSubject: ```\n{subject_name}```\nTopic: ```\n{topic_name}```\nQuestions: ```\n{len(questions)}```**"
+            with open(fname, "rb") as f:
+                await m.reply_document(document=f, caption=caption, file_name=f"{topic_name}_dppquiz.txt")
+            os.remove(fname)
+
+        except Exception as e:
+            logging.exception(f"DPP Quiz error: {e}")
+            try:
+                await editable.edit(f"**Error: {e}**")
+            except:
+                pass
+        finally:
+            await session.close()
+            await CONNECTOR.close()
+
 if __name__ == "__main__":
     threading.Thread(target=run_flask).start()
     bot.run()
