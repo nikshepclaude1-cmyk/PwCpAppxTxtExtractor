@@ -205,42 +205,47 @@ async def fetch_pwwp_data(session: aiohttp.ClientSession, url: str, headers: Dic
             return None
 
 
-async def process_pwwp_chapter_content(session: aiohttp.ClientSession, chapter_id, selected_batch_id, subject_id, schedule_id, content_type, headers: Dict):
-    url = f"https://api.penpencil.co/v1/batches/{selected_batch_id}/subject/{subject_id}/schedule/{schedule_id}/schedule-details"
-    data = await fetch_pwwp_data(session, url, headers=headers)
+async def process_pwwp_chapter_content(session: aiohttp.ClientSession, chapter_id, selected_batch_id, subject_id, schedule_id, content_type, headers: Dict, raw_url: str = '', raw_topic: str = ''):
     content = []
 
-    if data and data.get("success") and data.get("data"):
-        data_item = data["data"]
+    if content_type in ("videos", "DppVideos"):
+        # Use raw URL from /v2/contents directly — this is the actual working URL
+        # Output as-is: the mpd URL with parentId/childId is what PW player uses
+        if raw_url:
+            name = raw_topic or schedule_id
+            content.append(f"{name}:{raw_url}")
+            return {content_type: content} if content else {}
 
-        if content_type in ("videos", "DppVideos"):
+        # Fallback: schedule-details for older content
+        det_url = f"https://api.penpencil.co/v1/batches/{selected_batch_id}/subject/{subject_id}/schedule/{schedule_id}/schedule-details"
+        data = await fetch_pwwp_data(session, det_url, headers=headers)
+        if data and data.get("success") and data.get("data"):
+            data_item = data["data"]
             video_details = data_item.get('videoDetails', {})
             if video_details:
-                name = data_item.get('topic', '')
-                videoUrl = video_details.get('videoUrl') or video_details.get('embedCode') or ""
-            #    image = video_details.get('image', "")
+                name = data_item.get('topic', '') or raw_topic or schedule_id
+                video_url = video_details.get('videoUrl') or video_details.get('embedCode') or ""
+                if video_url:
+                    content.append(f"{name}:{video_url}")
+        return {content_type: content} if content else {}
 
-                if videoUrl:
-                    line = f"{name}:{videoUrl}"
-                    content.append(line)
-               #     logging.info(line)
+    else:
+        # notes / DppNotes — still need schedule-details for attachments
+        url = f"https://api.penpencil.co/v1/batches/{selected_batch_id}/subject/{subject_id}/schedule/{schedule_id}/schedule-details"
+        data = await fetch_pwwp_data(session, url, headers=headers)
 
-        elif content_type in ("notes", "DppNotes"):
+        if data and data.get("success") and data.get("data"):
+            data_item = data["data"]
             homework_ids = data_item.get('homeworkIds', [])
             for homework in homework_ids:
                 attachment_ids = homework.get('attachmentIds', [])
                 name = homework.get('topic', '')
                 for attachment in attachment_ids:
-                    url = attachment.get('baseUrl', '') + attachment.get('key', '')
-                    if url:
-                        line = f"{name}:{url}"
-                        content.append(line)
-                    #    logging.info(line)
+                    att_url = attachment.get('baseUrl', '') + attachment.get('key', '')
+                    if att_url:
+                        content.append(f"{name}:{att_url}")
 
         return {content_type: content} if content else {}
-    else:
-        logging.warning(f"No Data Found For  Id - {schedule_id}")
-        return {}
 
 
 async def fetch_pwwp_all_schedule(session: aiohttp.ClientSession, chapter_id, selected_batch_id, subject_id, content_type, headers: Dict) -> List[Dict]:
@@ -276,7 +281,7 @@ async def process_pwwp_chapters(session: aiohttp.ClientSession, chapter_id, sele
         all_schedule.extend(schedule)
         
     content_tasks = [
-        process_pwwp_chapter_content(session, chapter_id, selected_batch_id, subject_id, item["_id"], item['content_type'], headers)
+        process_pwwp_chapter_content(session, chapter_id, selected_batch_id, subject_id, item["_id"], item['content_type'], headers, item.get('url', ''), item.get('topic', ''))
         for item in all_schedule
     ]
     content_results = await asyncio.gather(*content_tasks)
@@ -693,7 +698,7 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                             params_v = {
                                 "page": str(page),
                                 "tag": "",
-                                "contentType": "exercises-notes-videos",
+                                "contentType": "videos",
                             }
                             res = await fetch_pwwp_data(
                                 session,
@@ -709,13 +714,8 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                                     raw_url = item.get("url", "")
                                     topic = item.get("topic", "Unknown")
                                     if raw_url:
-                                        # Convert MPD DRM URL → HLS m3u8 (cdn swap trick)
-                                        hls_url = raw_url.replace("d1d34p8vz63oiq", "d3nzo6itypaz07").replace("mpd", "m3u8").strip()
-                                        # Fallback: old cloudfront HLS construction
-                                        if "d3nzo6itypaz07" not in hls_url and "m3u8" not in hls_url:
-                                            video_id = raw_url.split("/")[-2]
-                                            hls_url = f"https://d26g5bnklkwsh4.cloudfront.net/{video_id}/hls/720/main.m3u8"
-                                        all_video_lines.append(f"{topic}:{hls_url}\n")
+                                        # Output raw URL as-is — same format as rarestudy/other bots
+                                        all_video_lines.append(f"{topic}:{raw_url}\n")
                                 except Exception:
                                     pass
 
