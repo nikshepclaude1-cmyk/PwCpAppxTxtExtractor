@@ -56,7 +56,7 @@ def home():
     return "Bot is running!"
 
 def run_flask():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 1000)))#Use 8080 Port here, if you're deploying it on koyeb
+    app.run(host="0.0.0.0", port=1000) #Use 8080 Port here, if you're deploying it on koyeb
     
 
 image_list = [
@@ -719,7 +719,8 @@ async def get_cpwp_course_content(session: aiohttp.ClientSession, headers: Dict[
                         identifier = url_val.split('/')[-2]
                         url_val = f'https://media-cdn.classplusapp.com/tencent/{identifier}/master.m3u8'
                     elif "4b06bf8d61c41f8310af9b2624459378203740932b456b07fcf817b737fbae27" in url_val and url_val.endswith('.jpeg'):
-                        url_val = f'https://media-cdn.classplusapp.com/alisg-cdn-a.classplusapp.com/b08bad9ff8d969639b2e43d5769342cc62b510c4345d2f7f153bec53be84fe35/{url_val.split('/')[-1].split('.')[0]}/master.m3u8'
+                        _seg = url_val.split('/')[-1].split('.')[0]
+                        url_val = f'https://media-cdn.classplusapp.com/alisg-cdn-a.classplusapp.com/b08bad9ff8d969639b2e43d5769342cc62b510c4345d2f7f153bec53be84fe35/{_seg}/master.m3u8'
                     elif "cpvideocdn.testbook.com" in url_val and url_val.endswith('.png'):
                         match = re.search(r'/streams/([a-f0-9]{24})/', url_val)
                         video_id = match.group(1) if match else url_val.split('/')[-2]
@@ -1669,5 +1670,3 @@ async def process_appxwp(bot: Client, m: Message, user_id: int):
 if __name__ == "__main__":
     threading.Thread(target=run_flask).start()
     bot.run()
-                                        
-
