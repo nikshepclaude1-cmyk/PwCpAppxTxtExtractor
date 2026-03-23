@@ -164,6 +164,9 @@ async def start(bot, message):
       InlineKeyboardButton("🚀 Physics Wallah without Purchase 🚀", callback_data="pwwp")
     ],
     [
+      InlineKeyboardButton("🆓 PW Free Extract (No Login) 🆓", callback_data="pwfree")
+    ],
+    [
       InlineKeyboardButton("📘 Classplus without Purchase 📘", callback_data="cpwp")
     ],
     [
@@ -2092,6 +2095,219 @@ async def process_dppquiz(bot: Client, m: Message, user_id: int):
             try:
                 await editable.edit(f"**Error: {e}**")
             except:
+                pass
+        finally:
+            await session.close()
+            await CONNECTOR.close()
+
+
+SUARKAFAN_BASE = "https://api.suarkafan.xyz/mindmatrix/pwbatches/get"
+
+async def suarkafan_get(session: aiohttp.ClientSession, endpoint: str, params: dict = None) -> dict:
+    """Hit the suarkafan proxy API - no auth needed."""
+    url = f"{SUARKAFAN_BASE}/{endpoint}"
+    try:
+        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as r:
+            if r.status == 200:
+                return await r.json(content_type=None)
+    except Exception as e:
+        logging.error(f"suarkafan API error: {e}")
+    return {}
+
+
+@bot.on_callback_query(filters.regex("^pwfree$"))
+async def pwfree_callback(bot, callback_query):
+    user_id = callback_query.from_user.id
+    await callback_query.answer()
+
+    auth_user = auth_users[0]
+    user = await bot.get_users(auth_user)
+    owner_username = "@" + user.username
+
+    if user_id not in auth_users:
+        await bot.send_message(callback_query.message.chat.id,
+            f"**You Are Not Subscribed To This Bot\nContact - {owner_username}**")
+        return
+
+    THREADPOOL.submit(asyncio.run, process_pwfree(bot, callback_query.message, user_id))
+
+
+async def process_pwfree(bot: Client, m: Message, user_id: int):
+    loop = asyncio.get_event_loop()
+    CONNECTOR = aiohttp.TCPConnector(limit=100, loop=loop)
+    async with aiohttp.ClientSession(connector=CONNECTOR, loop=loop) as session:
+        try:
+            editable = await m.reply_text(
+                "**🆓 PW Free Extract (No Login Required)**\n\n"
+                "Send batch name to search:"
+            )
+            try:
+                inp = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
+                search = inp.text.strip()
+                await inp.delete(True)
+            except ListenerTimeout:
+                await editable.edit("**Timeout!**"); return
+
+            await editable.edit(f"**🔍 Searching for: {search}...**")
+
+            # Search batches
+            data = await suarkafan_get(session, "getAllBatchesSearch.php", {"search": search})
+
+            if not data or not isinstance(data, list) or len(data) == 0:
+                await editable.edit(
+                    "**❌ No batches found OR the free API is currently down.**\n\n"
+                    "This API (`suarkafan.xyz`) is a third-party mirror and may go offline.\n"
+                    "Try the normal **PW without Purchase** button instead (requires your token)."
+                )
+                return
+
+            text = ""
+            for i, batch in enumerate(data[:20]):
+                name = batch.get("batch_name") or batch.get("name") or str(batch)
+                text += f"{i+1}. ```\n{name}```\n"
+
+            await editable.edit(f"**Found {len(data)} batches:\n\n{text}\nSend index number:**")
+
+            try:
+                inp2 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
+                idx = int(inp2.text.strip()) - 1
+                await inp2.delete(True)
+            except (ListenerTimeout, ValueError):
+                await editable.edit("**Timeout or invalid input**"); return
+
+            if not (0 <= idx < len(data)):
+                await editable.edit("**Invalid index**"); return
+
+            batch = data[idx]
+            batch_id = batch.get("batch_id") or batch.get("_id") or batch.get("id")
+            batch_name = batch.get("batch_name") or batch.get("name") or "Unknown"
+
+            if not batch_id:
+                await editable.edit("**❌ Could not get batch ID from API response**"); return
+
+            await editable.edit(f"**📚 Batch: {batch_name}\nFetching subjects...**")
+
+            # Get subjects
+            subjects_data = await suarkafan_get(session, "getAllSubjects.php", {"batch_id": batch_id})
+            if not subjects_data or not isinstance(subjects_data, list):
+                await editable.edit("**❌ No subjects found**"); return
+
+            text = ""
+            for i, s in enumerate(subjects_data):
+                sname = s.get("subject_name") or s.get("name") or s.get("subject") or str(i+1)
+                text += f"{i+1}. ```\n{sname}```\n"
+
+            await editable.edit(f"**Subjects:\n\n{text}\nSend index (or `all` for all subjects):**")
+
+            try:
+                inp3 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
+                sinp = inp3.text.strip()
+                await inp3.delete(True)
+            except ListenerTimeout:
+                await editable.edit("**Timeout**"); return
+
+            if sinp.lower() == "all":
+                selected_subjects = subjects_data
+            else:
+                try:
+                    sidx = int(sinp) - 1
+                    if not (0 <= sidx < len(subjects_data)):
+                        await editable.edit("**Invalid index**"); return
+                    selected_subjects = [subjects_data[sidx]]
+                except ValueError:
+                    await editable.edit("**Invalid input**"); return
+
+            await editable.edit(f"**⏳ Extracting {batch_name}...\nThis may take a minute.**")
+
+            import time as _time
+            start = _time.time()
+            clean_name = batch_name.replace("/", "-").replace("|", "-")[:80]
+            clean_file = f"{user_id}_{clean_name}"
+
+            all_lines = []
+            skip_topics = ["new feature update", "new update", "important update", "new study page"]
+
+            for subject in selected_subjects:
+                subject_id = subject.get("subject_id") or subject.get("_id") or subject.get("id")
+                subject_name = subject.get("subject_name") or subject.get("name") or subject.get("subject") or "Unknown"
+
+                if not subject_id:
+                    continue
+
+                # Get chapters
+                chapters_data = await suarkafan_get(session, "getAllChapters.php",
+                    {"batch_id": batch_id, "subject_id": subject_id})
+                chapters = chapters_data if isinstance(chapters_data, list) else []
+
+                # Get lectures (videos)
+                lectures_data = await suarkafan_get(session, "getAllLectures.php",
+                    {"batch_id": batch_id, "subject_id": subject_id})
+                lectures = lectures_data if isinstance(lectures_data, list) else []
+
+                for lec in lectures:
+                    topic = (lec.get("lecture_topic") or lec.get("topic") or "Unknown").strip()
+                    if any(k in topic.lower() for k in skip_topics):
+                        continue
+                    url = lec.get("lecture_videoUrl") or lec.get("videoUrl") or lec.get("url") or ""
+                    if url:
+                        all_lines.append(f"{topic}:{url}")
+
+                # Get notes
+                notes_data = await suarkafan_get(session, "getAllNotes.php",
+                    {"batch_id": batch_id, "subject_id": subject_id})
+                notes = notes_data if isinstance(notes_data, list) else []
+
+                for note in notes:
+                    topic = (note.get("topic") or note.get("name") or "Note").strip()
+                    url = note.get("url") or note.get("baseUrl", "") + note.get("key", "")
+                    if url:
+                        all_lines.append(f"{topic}:{url}")
+
+                # Get DPPs
+                dpps_data = await suarkafan_get(session, "getAllDpps.php",
+                    {"batch_id": batch_id, "subject_id": subject_id})
+                dpps = dpps_data if isinstance(dpps_data, list) else []
+
+                for dpp in dpps:
+                    topic = (dpp.get("topic") or dpp.get("name") or "DPP").strip()
+                    url = dpp.get("url") or dpp.get("baseUrl", "") + dpp.get("key", "")
+                    if url:
+                        all_lines.append(f"{topic}:{url}")
+
+            if not all_lines:
+                await editable.edit(
+                    "**❌ No content found.**\n\n"
+                    "The free API may have different field names or this batch isn't in its database yet.\n"
+                    "Share the raw API response with the bot admin to fix field mapping."
+                )
+                return
+
+            elapsed = _time.time() - start
+            mins = int(elapsed // 60)
+            secs = int(elapsed % 60)
+            fmt_time = f"{mins}m {secs}s" if mins else f"{secs}s"
+
+            # Write txt
+            with open(f"{clean_file}.txt", "w", encoding="utf-8") as f:
+                f.write("\n".join(all_lines))
+
+            await editable.delete(True)
+            caption = (
+                f"**🆓 Free Extract**\n"
+                f"**Batch:** ```\n{batch_name}```"
+                f"**Items:** ```\n{len(all_lines)}```"
+                f"**Time:** ```\n{fmt_time}```"
+            )
+
+            with open(f"{clean_file}.txt", "rb") as f:
+                await m.reply_document(document=f, caption=caption, file_name=f"{clean_name}.txt")
+            os.remove(f"{clean_file}.txt")
+
+        except Exception as e:
+            logging.exception(f"pwfree error: {e}")
+            try:
+                await editable.edit(f"**Error: {e}**")
+            except Exception:
                 pass
         finally:
             await session.close()
