@@ -1,4 +1,4 @@
-FROM python:latest
+FROM python:3.11-slim
 RUN pip install --upgrade pip
 COPY requirements.txt requirements.txt
 WORKDIR .
