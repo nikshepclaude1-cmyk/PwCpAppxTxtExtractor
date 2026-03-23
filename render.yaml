@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: pwcp-appx-txt-extractor
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    # Flask runs on port 1000 in main.py (line 59).
+    # Update run_flask() to: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 1000)))
+    # so Render can inject the correct port via the PORT env var.
+    envVars:
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
+      - key: PORT
+        value: "1000"
