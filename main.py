@@ -48,6 +48,19 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8547656163:AAFxNNgZNEijhf6FeM7_v8GEsCM8
 # Initialize Bot Globally (IMPORTANT FIX)
 bot = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
+# Anonymous PW player proxy — resolves MPD URLs to playable stream URLs
+# Works with any valid PW token regardless of batch ownership
+PW_PROXY = "https://anonymouspwplayer-907e62cf4891.herokuapp.com/pw"
+
+def make_proxy_url(raw_url: str, token: str) -> str:
+    """Wrap a PW MPD URL through the anonymous proxy to get a playable URL."""
+    if not raw_url or not token:
+        return raw_url
+    # Proxy format: /pw?url={full_mpd_url}&token={bearer_token}
+    import urllib.parse
+    encoded_url = urllib.parse.quote(raw_url, safe='')
+    return f"{PW_PROXY}?url={encoded_url}&token={token}"
+
 # Flask app for Render
 app = Flask(__name__)
 
@@ -212,11 +225,17 @@ async def process_pwwp_chapter_content(session: aiohttp.ClientSession, chapter_i
     content = []
 
     if content_type in ("videos", "DppVideos"):
-        # Strategy: try raw_url from /v2/contents first (fast, no extra call)
-        # If empty, hit schedule-details which has videoDetails.videoUrl for recorded lectures
+        # Extract token from headers for proxy use
+        token = (headers.get('authorization') or headers.get('Authorization') or '').replace('Bearer ', '').strip()
+
         if raw_url:
             name = raw_topic or schedule_id
-            content.append(f"{name}:{raw_url}")
+            # If MPD URL, wrap through proxy so it resolves to playable stream
+            if 'd1d34p8vz63oiq' in raw_url or '.mpd' in raw_url:
+                out_url = make_proxy_url(raw_url, token) if token else raw_url
+            else:
+                out_url = raw_url
+            content.append(f"{name}:{out_url}")
             return {content_type: content} if content else {}
 
         # raw_url empty — hit schedule-details to get videoUrl
@@ -229,11 +248,14 @@ async def process_pwwp_chapter_content(session: aiohttp.ClientSession, chapter_i
             if video_details:
                 video_url = video_details.get('videoUrl') or video_details.get('embedCode') or ""
                 if video_url:
+                    if 'd1d34p8vz63oiq' in video_url or '.mpd' in video_url:
+                        video_url = make_proxy_url(video_url, token) if token else video_url
                     content.append(f"{name}:{video_url}")
                     return {content_type: content} if content else {}
-            # Also check top-level url field in schedule-details response
             top_url = data_item.get('url', '')
             if top_url and 'cloudfront' in top_url:
+                if 'd1d34p8vz63oiq' in top_url or '.mpd' in top_url:
+                    top_url = make_proxy_url(top_url, token) if token else top_url
                 content.append(f"{name}:{top_url}")
         return {content_type: content} if content else {}
 
@@ -337,6 +359,10 @@ async def fetch_pwwp_subject_videos(session: aiohttp.ClientSession, selected_bat
             if any(k in topic.lower() for k in skip_keywords):
                 continue
             if raw_url:
+                # Use proxy for MPD URLs
+                token = (headers.get('authorization') or headers.get('Authorization') or '').replace('Bearer ', '').strip()
+                if 'd1d34p8vz63oiq' in raw_url or '.mpd' in raw_url:
+                    raw_url = make_proxy_url(raw_url, token) if token else raw_url
                 video_lines.append(f"{topic}:{raw_url}")
     return video_lines
 
@@ -777,7 +803,10 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                                     raw_url = item.get("url", "")
                                     topic = item.get("topic", "Unknown")
                                     if raw_url:
-                                        # Output raw URL as-is — same format as rarestudy/other bots
+                                        # Wrap MPD URLs through proxy for playable output
+                                        token = (headers.get('authorization') or headers.get('Authorization') or '').replace('Bearer ', '').strip()
+                                        if 'd1d34p8vz63oiq' in raw_url or '.mpd' in raw_url:
+                                            raw_url = make_proxy_url(raw_url, token) if token else raw_url
                                         all_video_lines.append(f"{topic}:{raw_url}\n")
                                 except Exception:
                                     pass
